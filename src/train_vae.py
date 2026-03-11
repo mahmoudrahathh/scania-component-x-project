@@ -152,10 +152,18 @@ def train_vae_and_predict_rul(merged_data: pd.DataFrame):
     print(f"Labeled samples used for VAE+MLP fine-tuning: {len(labeled_scaled)}")
     print(f"Labeled samples used for Baseline MLP: {len(labeled_scaled)}")
 
-    # Split — same split for both models for fair comparison
+    # Split — same split for all models for fair comparison
     X_train, X_test, y_train, y_test = train_test_split(
         labeled_scaled, y, test_size=0.2, random_state=42
     )
+
+    # Sanity-check baseline: predict mean training RUL for every test sample
+    mean_rul_train = float(np.mean(y_train))
+    y_pred_mean = np.full_like(y_test, fill_value=mean_rul_train, dtype=np.float64)
+    mae_mean_baseline = float(np.mean(np.abs(y_test - y_pred_mean)))
+
+    print(f"\nSanity baseline (predict mean train RUL): {mean_rul_train:.4f}")
+    print(f"Sanity baseline MAE: {mae_mean_baseline:.4f}")
 
     # VAE + MLP: fine-tune encoder + MLP head jointly
     print(f"\nTraining VAE + MLP on {len(X_train)} samples (validation: {len(X_train) - int(len(X_train)*0.8)}, test: {len(X_test)})...")
@@ -185,11 +193,8 @@ def train_vae_and_predict_rul(merged_data: pd.DataFrame):
 
     # Comparison
     print(f"\n=== Performance Comparison ===")
-    print(f"VAE + MLP MAE:    {mae_vae:.4f}")
-    print(f"Baseline MLP MAE: {mae_base:.4f}")
-    if mae_vae < mae_base:
-        print("VAE + MLP performs better.")
-    else:
-        print("Baseline MLP performs better or equally.")
+    print(f"Sanity Mean-RUL MAE: {mae_mean_baseline:.4f}")
+    print(f"VAE + MLP MAE:       {mae_vae:.4f}")
+    print(f"Baseline MLP MAE:    {mae_base:.4f}")
 
     return vae, encoder, vae_mlp, mlp_baseline
