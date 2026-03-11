@@ -7,6 +7,7 @@ from train_ae import train_ae_and_predict_rul
 from train_plain_baseline import train_plain_baseline_mlp
 from train_contrastive import train_contrastive_and_predict_rul
 from sklearn.model_selection import train_test_split
+from visualize_representations import visualize_latent_representations
 
 def main():
     # Load the data
@@ -113,6 +114,17 @@ def main():
     print(f"VAE + MLP MAE:               {vae_metrics['vae_mlp_mae']:.4f}")
     print(f"Standalone Baseline MLP MAE: {plain_baseline_mae:.4f}")
     print(f"MeanValuePredictor MAE:      {meanValuePredictor:.4f}")
+
+    # Visualize latent spaces (same number labeled vs unlabeled)
+    visualize_latent_representations(
+        merged_data=merged_data,
+        ae_encoder=ae_encoder,
+        vae_encoder=encoder,
+        contrastive_encoder=cl_encoder,
+        latent_dim=50,
+        random_state=42,
+        out_file="outputs/latent_spaces_pca2d.jpg",
+    )
 
 if __name__ == "__main__":
     main()

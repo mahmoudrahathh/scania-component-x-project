@@ -12,6 +12,7 @@ venv/
 # Data files (usually too large for Git)
 *.csv
 data/
+outputs/
 
 # Jupyter
 .ipynb_checkpoints/
