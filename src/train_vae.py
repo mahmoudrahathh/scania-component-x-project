@@ -79,20 +79,15 @@ def build_vae_mlp(encoder, latent_dim):
     model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4), loss="mse", metrics=["mae"])
     return model
 
-def build_baseline_mlp(input_dim):
-    """Build baseline MLP with same head architecture as VAE+MLP."""
-    mlp = models.Sequential([
-        layers.Input(shape=(input_dim,)),
-        layers.Dense(128, activation="relu"),
-        layers.Dense(64, activation="relu"),
-        layers.Dense(32, activation="relu"),
-        layers.Dense(1)
-    ])
-    mlp.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4), loss="mse", metrics=["mae"])
-    return mlp
-
-def train_vae_and_predict_rul(merged_data: pd.DataFrame):
-    # Separate unlabeled (RUL = -1) and labeled (RUL >= 0)
+def train_vae_and_predict_rul(
+    merged_data: pd.DataFrame,
+    train_idx,
+    val_idx,
+    test_idx,
+    latent_dim: int = 50,
+    epochs_representation: int = 10,
+    epochs_finetune: int = 10,
+):
     drop_cols = ['vehicle_id', 'time_step', 'length_of_study_time_step', 'in_study_repair', 'RUL']
     
     unlabeled_full = merged_data[merged_data['RUL'] == -1].drop(columns=drop_cols).copy()
@@ -103,7 +98,6 @@ def train_vae_and_predict_rul(merged_data: pd.DataFrame):
     print(f"\nUnlabeled samples (for VAE): {len(unlabeled_full)}")
     print(f"Labeled samples (for MLP fine-tuning): {len(labeled)}")
 
-    # Fill NaN: mean for numeric, 'Unknown' for categorical
     numeric_cols = unlabeled_full.select_dtypes(include=[np.number]).columns
     cat_cols = unlabeled_full.select_dtypes(include=['object']).columns
 
@@ -111,7 +105,6 @@ def train_vae_and_predict_rul(merged_data: pd.DataFrame):
     for col in cat_cols:
         unlabeled_full[col] = unlabeled_full[col].fillna('Unknown')
 
-    # Encode categorical columns on full unlabeled data
     categorical_cols = [col for col in unlabeled_full.columns if col.startswith('Spec_')]
     encoders = {}
     for col in categorical_cols:
@@ -119,25 +112,13 @@ def train_vae_and_predict_rul(merged_data: pd.DataFrame):
         unlabeled_full[col] = le.fit_transform(unlabeled_full[col])
         encoders[col] = le
 
-    # Scale on full unlabeled data
     scaler = MinMaxScaler()
     unlabeled_scaled = scaler.fit_transform(unlabeled_full)
     unlabeled_scaled = np.nan_to_num(unlabeled_scaled, nan=0.0, posinf=1.0, neginf=0.0)
 
-    # Train VAE on all unlabeled samples
     input_dim = unlabeled_scaled.shape[1]
-    print(f"\nTraining VAE on {len(unlabeled_scaled)} unlabeled samples...")
-    vae, encoder, decoder = build_vae(input_dim)
-    vae.fit(
-        unlabeled_scaled,
-        epochs=50,
-        batch_size=256,
-        validation_split=0.2,
-        callbacks=[EarlyStopping(patience=10)]
-    )
-    print("\nVAE training completed. Now fine-tuning encoder + MLP head on labeled samples...")
 
-    # Prepare labeled features
+    # Prepare labeled features first
     labeled_features[numeric_cols] = labeled_features[numeric_cols].fillna(labeled_features[numeric_cols].mean())
     for col in cat_cols:
         if col in labeled_features.columns:
@@ -150,51 +131,48 @@ def train_vae_and_predict_rul(merged_data: pd.DataFrame):
     y = np.nan_to_num(y, nan=0.0)
 
     print(f"Labeled samples used for VAE+MLP fine-tuning: {len(labeled_scaled)}")
-    print(f"Labeled samples used for Baseline MLP: {len(labeled_scaled)}")
 
-    # Split — same split for all models for fair comparison
-    X_train, X_test, y_train, y_test = train_test_split(
-        labeled_scaled, y, test_size=0.2, random_state=42
+    # Fixed split from main.py
+    X_train = labeled_scaled[train_idx]
+    X_val = labeled_scaled[val_idx]
+    X_test = labeled_scaled[test_idx]
+
+    y_train = y[train_idx]
+    y_val = y[val_idx]
+    y_test = y[test_idx]
+
+    print(f"[VAE] train={len(X_train)}, val={len(X_val)}, test={len(X_test)}")
+
+    print(f"\nTraining VAE on {len(unlabeled_scaled)} unlabeled samples...")
+    # If build_vae supports latent_dim, pass it:
+    vae, encoder, decoder = build_vae(input_dim, latent_dim=latent_dim)
+    vae.fit(
+        unlabeled_scaled,
+        epochs=epochs_representation,
+        batch_size=256,
+        validation_data=(X_val,),
+        callbacks=[EarlyStopping(patience=3, restore_best_weights=True)],
+        verbose=1,
     )
 
-    # Sanity-check baseline: predict mean training RUL for every test sample
-    mean_rul_train = float(np.mean(y_train))
-    y_pred_mean = np.full_like(y_test, fill_value=mean_rul_train, dtype=np.float64)
-    mae_mean_baseline = float(np.mean(np.abs(y_test - y_pred_mean)))
+    print("\nVAE training completed. Fine-tuning encoder + MLP on labeled samples...")
 
-    print(f"\nSanity baseline (predict mean train RUL): {mean_rul_train:.4f}")
-    print(f"Sanity baseline MAE: {mae_mean_baseline:.4f}")
-
-    # VAE + MLP: fine-tune encoder + MLP head jointly
-    print(f"\nTraining VAE + MLP on {len(X_train)} samples (validation: {len(X_train) - int(len(X_train)*0.8)}, test: {len(X_test)})...")
-    vae_mlp = build_vae_mlp(encoder, latent_dim=100)
+    # Use the same latent_dim for VAE+MLP head
+    vae_mlp = build_vae_mlp(encoder, latent_dim=latent_dim)
     vae_mlp.fit(
-        X_train, y_train,
-        epochs=50,
+        X_train,
+        y_train,
+        epochs=epochs_finetune,
         batch_size=256,
-        validation_split=0.2,
-        callbacks=[EarlyStopping(patience=10)]
+        validation_data=(X_val, y_val),
+        callbacks=[EarlyStopping(patience=3, restore_best_weights=True)],
+        verbose=1,
     )
-    loss_vae, mae_vae = vae_mlp.evaluate(X_test, y_test)
-    print(f"\nVAE + MLP Test MAE: {mae_vae:.4f}")
 
-    # Baseline MLP: train directly on raw features
-    print(f"\nTraining Baseline MLP on {len(X_train)} samples (validation: {len(X_train) - int(len(X_train)*0.8)}, test: {len(X_test)})...")
-    mlp_baseline = build_baseline_mlp(input_dim)
-    mlp_baseline.fit(
-        X_train, y_train,
-        epochs=50,
-        batch_size=256,
-        validation_split=0.2,
-        callbacks=[EarlyStopping(patience=10)]
-    )
-    loss_base, mae_base = mlp_baseline.evaluate(X_test, y_test)
-    print(f"Baseline MLP Test MAE: {mae_base:.4f}")
+    _, mae_vae = vae_mlp.evaluate(X_test, y_test, verbose=0)
 
-    # Comparison
-    print(f"\n=== Performance Comparison ===")
-    print(f"Sanity Mean-RUL MAE: {mae_mean_baseline:.4f}")
-    print(f"VAE + MLP MAE:       {mae_vae:.4f}")
-    print(f"Baseline MLP MAE:    {mae_base:.4f}")
+    vae_metrics = {
+        "vae_mlp_mae": float(mae_vae),
+    }
 
-    return vae, encoder, vae_mlp, mlp_baseline
+    return vae, encoder, vae_mlp, vae_metrics
