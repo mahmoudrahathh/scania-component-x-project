@@ -5,6 +5,7 @@ from analysis import DataAnalysis
 from train_vae import train_vae_and_predict_rul
 from train_ae import train_ae_and_predict_rul
 from train_plain_baseline import train_plain_baseline_mlp
+from train_contrastive import train_contrastive_and_predict_rul
 from sklearn.model_selection import train_test_split
 
 def main():
@@ -57,6 +58,18 @@ def main():
 
     print(f"\n[Split] Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)}")
 
+    # Contrastive learning experiment
+    cl_result = train_contrastive_and_predict_rul(
+        merged_data,
+        train_idx=train_idx,
+        val_idx=val_idx,
+        test_idx=test_idx,
+        latent_dim=50,
+        epochs_representation=10,
+        epochs_finetune=50,
+    )
+    cl_encoder, cl_mlp, cl_metrics = cl_result
+
     # AE experiment
     ae_result = train_ae_and_predict_rul(
         merged_data,
@@ -95,6 +108,7 @@ def main():
     meanValuePredictor = float(np.mean(np.abs(labeled_rul[test_idx] - mean_value)))
 
     print("\n=== Final Performance Comparison ===")
+    print(f"Contrastive + MLP MAE:       {cl_metrics['contrastive_mlp_mae']:.4f}")
     print(f"AE + MLP MAE:                {ae_metrics['ae_mlp_mae']:.4f}")
     print(f"VAE + MLP MAE:               {vae_metrics['vae_mlp_mae']:.4f}")
     print(f"Standalone Baseline MLP MAE: {plain_baseline_mae:.4f}")
