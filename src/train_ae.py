@@ -39,19 +39,16 @@ def build_ae(input_dim: int, latent_dim: int = 50):
     autoencoder.compile(optimizer=tf.keras.optimizers.Adam(1e-3), loss="mse")
     return autoencoder, encoder, decoder
 
-def build_encoder_mlp(encoder: models.Model):
-    encoder.trainable = True
-
+def build_encoder_mlp(encoder):
     inp = layers.Input(shape=encoder.input_shape[1:])
     z = encoder(inp)
     x = layers.Dense(128, activation="relu")(z)
     x = layers.Dense(64, activation="relu")(x)
     x = layers.Dense(32, activation="relu")(x)
     out = layers.Dense(1)(x)
-
-    model = models.Model(inp, out, name="ae_encoder_mlp")
-    model.compile(optimizer=tf.keras.optimizers.Adam(1e-4), loss="mse", metrics=["mae"])
-    return model
+    m = models.Model(inp, out, name="ae_encoder_mlp")
+    m.compile(optimizer="adam", loss="mse", metrics=["mae"])
+    return m
 
 def train_ae_and_predict_rul(
     merged_data: pd.DataFrame,
