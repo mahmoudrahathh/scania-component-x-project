@@ -4,6 +4,11 @@ import tensorflow as tf
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from tensorflow.keras import layers, models
 from tensorflow.keras.callbacks import EarlyStopping
+from pandas.api.types import (
+    is_datetime64_any_dtype,
+    is_datetime64tz_dtype,
+    is_timedelta64_dtype,
+)
 
 
 # ─────────────────────────────────────────────
@@ -114,13 +119,25 @@ def _preprocess(merged_data: pd.DataFrame):
     X_all = merged_data.drop(columns=drop_cols).copy()
     y = merged_data.loc[labeled_mask, "RUL"].values.astype(np.float32)
 
+    # Handle datetime/timedelta columns before scaling
+    dt_drop = []
+    for c in X_all.columns:
+        if is_timedelta64_dtype(X_all[c]):
+            X_all[c] = X_all[c].dt.total_seconds()
+        elif is_datetime64_any_dtype(X_all[c]) or is_datetime64tz_dtype(X_all[c]):
+            dt_drop.append(c)
+
+    if dt_drop:
+        X_all = X_all.drop(columns=dt_drop)
+
     num_cols = X_all.select_dtypes(include=[np.number]).columns
-    obj_cols = X_all.select_dtypes(include=["object"]).columns
+    obj_cols = X_all.select_dtypes(include=["object", "string", "category"]).columns
+
     X_all[num_cols] = X_all[num_cols].fillna(X_all[num_cols].mean())
     for c in obj_cols:
         X_all[c] = X_all[c].fillna("Unknown")
 
-    cat_cols = [c for c in X_all.columns if X_all[c].dtype == "object" or c.startswith("Spec_")]
+    cat_cols = [c for c in X_all.columns if X_all[c].dtype in ["object", "string", "category"] or c.startswith("Spec_")]
     for c in cat_cols:
         le = LabelEncoder()
         X_all[c] = le.fit_transform(X_all[c].astype(str))

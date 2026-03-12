@@ -4,6 +4,7 @@ import tensorflow as tf
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from tensorflow.keras import layers, models
 from tensorflow.keras.callbacks import EarlyStopping
+from pandas.api.types import is_datetime64_any_dtype, is_datetime64tz_dtype, is_timedelta64_dtype
 
 def _build_mlp(input_dim: int):
     mlp = models.Sequential([
@@ -82,6 +83,22 @@ def train_ae_and_predict_rul(
 
     X_unlabeled = X_all.loc[unlabeled_mask]
     X_labeled = X_all.loc[labeled_mask]
+
+    # right before MinMaxScaler().fit_transform(...)
+    # sanitize datetime-like columns for sklearn
+    td_cols = [c for c in X_unlabeled.columns if is_timedelta64_dtype(X_unlabeled[c])]
+    for c in td_cols:
+        X_unlabeled[c] = X_unlabeled[c].dt.total_seconds()
+        if c in X_labeled.columns:
+            X_labeled[c] = X_labeled[c].dt.total_seconds()
+
+    dt_cols = [
+        c for c in X_unlabeled.columns
+        if is_datetime64_any_dtype(X_unlabeled[c]) or is_datetime64tz_dtype(X_unlabeled[c])
+    ]
+    if dt_cols:
+        X_unlabeled = X_unlabeled.drop(columns=dt_cols, errors="ignore")
+        X_labeled = X_labeled.drop(columns=dt_cols, errors="ignore")
 
     scaler = MinMaxScaler()
     X_unlabeled = scaler.fit_transform(X_unlabeled)

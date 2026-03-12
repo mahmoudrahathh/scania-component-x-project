@@ -1,37 +1,44 @@
 import os
 import numpy as np
 import pandas as pd
+from sklearn.preprocessing import MinMaxScaler, LabelEncoder
+from pandas.api.types import is_datetime64_any_dtype, is_datetime64tz_dtype, is_timedelta64_dtype
 import matplotlib.pyplot as plt
-
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 
 
 def _prepare_features(merged_data: pd.DataFrame):
     drop_cols = ["vehicle_id", "time_step", "length_of_study_time_step", "in_study_repair", "RUL"]
+
     labeled_mask = merged_data["RUL"] >= 0
     unlabeled_mask = merged_data["RUL"] == -1
 
-    X_all = merged_data.drop(columns=drop_cols).copy()
+    X_all = merged_data.drop(columns=drop_cols, errors="ignore").copy()
 
-    num_cols = X_all.select_dtypes(include=[np.number]).columns
-    obj_cols = X_all.select_dtypes(include=["object"]).columns
+    # Convert/drop datetime-like columns
+    dt_drop = []
+    for c in X_all.columns:
+        if is_timedelta64_dtype(X_all[c]):
+            X_all[c] = X_all[c].dt.total_seconds()
+        elif is_datetime64_any_dtype(X_all[c]) or is_datetime64tz_dtype(X_all[c]):
+            dt_drop.append(c)
+    if dt_drop:
+        X_all = X_all.drop(columns=dt_drop, errors="ignore")
 
-    X_all[num_cols] = X_all[num_cols].fillna(X_all[num_cols].mean())
-    for c in obj_cols:
-        X_all[c] = X_all[c].fillna("Unknown")
-
-    cat_cols = [c for c in X_all.columns if X_all[c].dtype == "object" or c.startswith("Spec_")]
+    # Encode categoricals
+    cat_cols = X_all.select_dtypes(include=["object", "string", "category"]).columns
     for c in cat_cols:
         le = LabelEncoder()
-        X_all[c] = le.fit_transform(X_all[c].astype(str))
+        X_all[c] = le.fit_transform(X_all[c].astype("string").fillna("Unknown").astype(str))
+
+    # Numeric cleanup
+    X_all = X_all.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
     scaler = MinMaxScaler()
     X_all = scaler.fit_transform(X_all)
-    X_all = np.nan_to_num(X_all, nan=0.0, posinf=1.0, neginf=0.0).astype(np.float32)
 
-    X_labeled = X_all[labeled_mask.values]
-    X_unlabeled = X_all[unlabeled_mask.values]
+    X_labeled = X_all[labeled_mask.to_numpy()]
+    X_unlabeled = X_all[unlabeled_mask.to_numpy()]
     return X_labeled, X_unlabeled
 
 
