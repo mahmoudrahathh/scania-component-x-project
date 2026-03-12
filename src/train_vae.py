@@ -65,8 +65,8 @@ def build_vae(input_dim, latent_dim=100):
 
 def build_vae_mlp(encoder, latent_dim):
     """Build VAE + MLP by attaching MLP head to the frozen encoder."""
-    # Unfreeze encoder for fine-tuning
-    encoder.trainable = True
+    # fine-tune encoder weights jointly (uncomment if you want to fine-tune the encoder)  
+    encoder.trainable = True  
 
     inputs = layers.Input(shape=encoder.input_shape[1:])
     z_mean, z_log_var, z = encoder(inputs)
@@ -117,6 +117,7 @@ def train_vae_and_predict_rul(
     unlabeled_scaled = np.nan_to_num(unlabeled_scaled, nan=0.0, posinf=1.0, neginf=0.0)
 
     input_dim = unlabeled_scaled.shape[1]
+    print(f"[VAE] D (input_dim from unlabeled_scaled): {input_dim}")
 
     # Prepare labeled features first
     labeled_features[numeric_cols] = labeled_features[numeric_cols].fillna(labeled_features[numeric_cols].mean())
@@ -128,6 +129,7 @@ def train_vae_and_predict_rul(
             labeled_features[col] = encoders[col].transform(labeled_features[col])
     labeled_scaled = scaler.transform(labeled_features)
     labeled_scaled = np.nan_to_num(labeled_scaled, nan=0.0, posinf=1.0, neginf=0.0)
+    print(f"[VAE] D (from labeled_scaled): {labeled_scaled.shape[1]}")
     y = np.nan_to_num(y, nan=0.0)
 
     print(f"Labeled samples used for VAE+MLP fine-tuning: {len(labeled_scaled)}")

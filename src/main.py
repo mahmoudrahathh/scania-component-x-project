@@ -116,15 +116,15 @@ def main():
     print(f"MeanValuePredictor MAE:      {meanValuePredictor:.4f}")
 
     # Visualize latent spaces (same number labeled vs unlabeled)
-    visualize_latent_representations(
-        merged_data=merged_data,
-        ae_encoder=ae_encoder,
-        vae_encoder=encoder,
-        contrastive_encoder=cl_encoder,
-        latent_dim=50,
-        random_state=42,
-        out_file="outputs/latent_spaces_pca2d.jpg",
-    )
+    # visualize_latent_representations(
+    #     merged_data=merged_data,
+    #     ae_encoder=ae_encoder,
+    #     vae_encoder=encoder,
+    #     contrastive_encoder=cl_encoder,
+    #     latent_dim=50,
+    #     random_state=42,
+    #     out_file="outputs/latent_spaces_pca2d.jpg",
+    # )
 
 if __name__ == "__main__":
     main()

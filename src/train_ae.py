@@ -40,8 +40,9 @@ def build_ae(input_dim: int, latent_dim: int = 50):
     return autoencoder, encoder, decoder
 
 def build_encoder_mlp(encoder):
+    encoder.trainable = False  # freeze pretrained encoder
     inp = layers.Input(shape=encoder.input_shape[1:])
-    z = encoder(inp)
+    z = encoder(inp, training=False)
     x = layers.Dense(128, activation="relu")(z)
     x = layers.Dense(64, activation="relu")(x)
     x = layers.Dense(32, activation="relu")(x)
