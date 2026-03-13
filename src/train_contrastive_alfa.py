@@ -41,19 +41,21 @@ def _step(b, e, p, opt):
     opt.apply_gradients(zip(tape.gradient(l, vars_), vars_))
     return l
 
-def _head(encoder, lr=3e-4, dropout=0.25):
+def _head(encoder, lr=1e-4, dropout=0.25):
+    encoder.trainable = False  # permanently frozen
     i = layers.Input(shape=encoder.input_shape[1:])
-    z = encoder(i)
+    z = encoder(i, training=False)
     x = layers.Dense(128, activation="relu")(z)
     x = layers.Dropout(dropout)(x)
     x = layers.Dense(64, activation="relu")(x)
     x = layers.Dropout(dropout)(x)
+    x = layers.Dense(32, activation="relu")(x)
     o = layers.Dense(1)(x)
     m = models.Model(i, o)
     m.compile(optimizer=tf.keras.optimizers.Adam(lr), loss=tf.keras.losses.Huber(), metrics=["mae"])
     return m
 
-def train_contrastive_alfa_and_predict_rul(merged_data, train_idx, val_idx, test_idx, latent_dim=32, epochs_representation=40, epochs_finetune=70):
+def train_contrastive_alfa_and_predict_rul(merged_data, train_idx, val_idx, test_idx, latent_dim=32, epochs_representation=40, epochs_finetune=30):
     X_unlabeled, X_labeled, y = preprocess_alfa_merged(merged_data)
     X_train, X_val, X_test = X_labeled[train_idx], X_labeled[val_idx], X_labeled[test_idx]
     y_train, y_val, y_test = y[train_idx], y[val_idx], y[test_idx]
@@ -67,21 +69,20 @@ def train_contrastive_alfa_and_predict_rul(merged_data, train_idx, val_idx, test
         for b in ds:
             _step(b, e, p, opt)
 
-    m = _head(e, lr=3e-4)
+    m = _head(e, lr=1e-4)
 
-    e.trainable = False
+    # single stage: frozen encoder, head only
     m.fit(
-        X_train, y_train, epochs=12, batch_size=256, validation_data=(X_val, y_val),
-        callbacks=[EarlyStopping(patience=4, restore_best_weights=True), ReduceLROnPlateau(patience=2, factor=0.5)],
+        X_train, y_train,
+        epochs=epochs_finetune,
+        batch_size=256,
+        validation_data=(X_val, y_val),
+        callbacks=[
+            EarlyStopping(patience=8, restore_best_weights=True),
+            ReduceLROnPlateau(patience=3, factor=0.5),
+        ],
         verbose=1,
     )
 
-    e.trainable = True
-    m.compile(optimizer=tf.keras.optimizers.Adam(8e-5), loss=tf.keras.losses.Huber(), metrics=["mae"])
-    m.fit(
-        X_train, y_train, epochs=epochs_finetune, batch_size=256, validation_data=(X_val, y_val),
-        callbacks=[EarlyStopping(patience=8, restore_best_weights=True), ReduceLROnPlateau(patience=3, factor=0.5)],
-        verbose=1,
-    )
     _, mae = m.evaluate(X_test, y_test, verbose=0)
     return e, m, {"contrastive_mlp_mae": float(mae)}

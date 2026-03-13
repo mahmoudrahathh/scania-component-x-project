@@ -12,27 +12,28 @@ def _build_autoencoder(input_dim: int, latent_dim: int = 50):
     x = layers.Dense(128, activation="relu")(z)
     x = layers.Dense(256, activation="relu")(x)
     out = layers.Dense(input_dim)(x)
-
     autoencoder = models.Model(inp, out, name="ae_alfa")
     encoder = models.Model(inp, z, name="ae_encoder_alfa")
     autoencoder.compile(optimizer=tf.keras.optimizers.Adam(1e-3), loss="mse")
     return autoencoder, encoder
 
 
-def _build_mlp(encoder, lr=3e-4, dropout=0.25):
+def _build_mlp(encoder, lr=1e-4, dropout=0.25):
+    encoder.trainable = False  # permanently frozen
     inp = layers.Input(shape=encoder.input_shape[1:])
-    z = encoder(inp)
+    z = encoder(inp, training=False)
     x = layers.Dense(128, activation="relu")(z)
     x = layers.Dropout(dropout)(x)
     x = layers.Dense(64, activation="relu")(x)
     x = layers.Dropout(dropout)(x)
+    x = layers.Dense(32, activation="relu")(x)
     out = layers.Dense(1)(x)
     m = models.Model(inp, out, name="ae_mlp_alfa")
     m.compile(optimizer=tf.keras.optimizers.Adam(lr), loss=tf.keras.losses.Huber(), metrics=["mae"])
     return m
 
 
-def train_ae_alfa_and_predict_rul(merged_data, train_idx, val_idx, test_idx, latent_dim=32, epochs_representation=30, epochs_finetune=60):
+def train_ae_alfa_and_predict_rul(merged_data, train_idx, val_idx, test_idx, latent_dim=32, epochs_representation=30, epochs_finetune=30):
     X_unlabeled, X_labeled, y = preprocess_alfa_merged(merged_data)
     X_train, X_val, X_test = X_labeled[train_idx], X_labeled[val_idx], X_labeled[test_idx]
     y_train, y_val, y_test = y[train_idx], y[val_idx], y[test_idx]
@@ -48,28 +49,24 @@ def train_ae_alfa_and_predict_rul(merged_data, train_idx, val_idx, test_idx, lat
         verbose=1,
     )
 
-    ae_mlp = _build_mlp(encoder, lr=3e-4)
-
-    # stage 1: warmup head (frozen encoder)
-    encoder.trainable = False
-    ae_mlp.fit(
-        X_train, y_train,
-        epochs=12,
-        batch_size=256,
-        validation_data=(X_val, y_val),
-        callbacks=[EarlyStopping(patience=4, restore_best_weights=True), ReduceLROnPlateau(patience=2, factor=0.5)],
-        verbose=1,
+    encoder = models.Model(
+        inputs=autoencoder.input,
+        outputs=autoencoder.get_layer("latent").output,
+        name="ae_encoder",
     )
 
-    # stage 2: fine-tune all
-    encoder.trainable = True
-    ae_mlp.compile(optimizer=tf.keras.optimizers.Adam(8e-5), loss=tf.keras.losses.Huber(), metrics=["mae"])
+    ae_mlp = _build_mlp(encoder, lr=1e-4)
+
+    # single stage: frozen encoder, head only
     ae_mlp.fit(
         X_train, y_train,
         epochs=epochs_finetune,
         batch_size=256,
         validation_data=(X_val, y_val),
-        callbacks=[EarlyStopping(patience=8, restore_best_weights=True), ReduceLROnPlateau(patience=3, factor=0.5)],
+        callbacks=[
+            EarlyStopping(patience=8, restore_best_weights=True),
+            ReduceLROnPlateau(patience=3, factor=0.5),
+        ],
         verbose=1,
     )
 

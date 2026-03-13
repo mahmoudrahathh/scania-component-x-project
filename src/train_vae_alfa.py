@@ -26,35 +26,32 @@ def _build_vae(input_dim: int, latent_dim: int = 50):
 
     recon = decoder(z)
     vae = models.Model(inp, recon, name="vae_alfa")
-    encoder = models.Model(inp, z_mean, name="vae_encoder_alfa")
-
-    # Keras-3 safe compile path (no add_loss on Functional)
     vae.compile(optimizer=tf.keras.optimizers.Adam(1e-3), loss="mse")
-    return vae, encoder
+    return vae
 
 
-def _build_mlp(encoder, lr=3e-4, dropout=0.25):
+def _build_mlp(encoder, lr=1e-4, dropout=0.25):
+    encoder.trainable = False  # permanently frozen
     inp = layers.Input(shape=encoder.input_shape[1:])
-    z = encoder(inp)
+    z = encoder(inp, training=False)
     x = layers.Dense(128, activation="relu")(z)
     x = layers.Dropout(dropout)(x)
     x = layers.Dense(64, activation="relu")(x)
     x = layers.Dropout(dropout)(x)
+    x = layers.Dense(32, activation="relu")(x)
     out = layers.Dense(1)(x)
     m = models.Model(inp, out, name="vae_mlp_alfa")
     m.compile(optimizer=tf.keras.optimizers.Adam(lr), loss=tf.keras.losses.Huber(), metrics=["mae"])
     return m
 
 
-def train_vae_alfa_and_predict_rul(merged_data, train_idx, val_idx, test_idx, latent_dim=32, epochs_representation=30, epochs_finetune=60):
+def train_vae_alfa_and_predict_rul(merged_data, train_idx, val_idx, test_idx, latent_dim=32, epochs_representation=30, epochs_finetune=30):
     X_unlabeled, X_labeled, y = preprocess_alfa_merged(merged_data)
     X_train, X_val, X_test = X_labeled[train_idx], X_labeled[val_idx], X_labeled[test_idx]
     y_train, y_val, y_test = y[train_idx], y[val_idx], y[test_idx]
 
-    vae, encoder = _build_vae(X_labeled.shape[1], latent_dim)
+    vae = _build_vae(X_labeled.shape[1], latent_dim)
     pre_x = X_unlabeled if len(X_unlabeled) > 0 else X_train
-
-    # reconstruction training needs targets
     vae.fit(
         pre_x, pre_x,
         epochs=epochs_representation,
@@ -64,20 +61,24 @@ def train_vae_alfa_and_predict_rul(merged_data, train_idx, val_idx, test_idx, la
         verbose=1,
     )
 
-    vae_mlp = _build_mlp(encoder, lr=3e-4)
-
-    encoder.trainable = False
-    vae_mlp.fit(
-        X_train, y_train, epochs=12, batch_size=256, validation_data=(X_val, y_val),
-        callbacks=[EarlyStopping(patience=4, restore_best_weights=True), ReduceLROnPlateau(patience=2, factor=0.5)],
-        verbose=1,
+    encoder = models.Model(
+        inputs=vae.input,
+        outputs=vae.get_layer("z_mean").output,
+        name="vae_encoder",
     )
 
-    encoder.trainable = True
-    vae_mlp.compile(optimizer=tf.keras.optimizers.Adam(8e-5), loss=tf.keras.losses.Huber(), metrics=["mae"])
+    vae_mlp = _build_mlp(encoder, lr=1e-4)
+
+    # single stage: frozen encoder, head only
     vae_mlp.fit(
-        X_train, y_train, epochs=epochs_finetune, batch_size=256, validation_data=(X_val, y_val),
-        callbacks=[EarlyStopping(patience=8, restore_best_weights=True), ReduceLROnPlateau(patience=3, factor=0.5)],
+        X_train, y_train,
+        epochs=epochs_finetune,
+        batch_size=256,
+        validation_data=(X_val, y_val),
+        callbacks=[
+            EarlyStopping(patience=8, restore_best_weights=True),
+            ReduceLROnPlateau(patience=3, factor=0.5),
+        ],
         verbose=1,
     )
 

@@ -259,13 +259,13 @@ def main():
     print(f"\n[Split] Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)}")
 
     cl_encoder, cl_mlp, cl_metrics = train_contrastive_alfa_and_predict_rul(
-        merged_data, train_idx, val_idx, test_idx, latent_dim=32, epochs_representation=40, epochs_finetune=70
+        merged_data, train_idx, val_idx, test_idx, latent_dim=32, epochs_representation=40, epochs_finetune=30
     )
     autoencoder, ae_encoder, ae_mlp, ae_metrics = train_ae_alfa_and_predict_rul(
-        merged_data, train_idx, val_idx, test_idx, latent_dim=32, epochs_representation=30, epochs_finetune=60
+        merged_data, train_idx, val_idx, test_idx, latent_dim=32, epochs_representation=30, epochs_finetune=30
     )
     vae, vae_encoder, vae_mlp, vae_metrics = train_vae_alfa_and_predict_rul(
-        merged_data, train_idx, val_idx, test_idx, latent_dim=32, epochs_representation=30, epochs_finetune=60
+        merged_data, train_idx, val_idx, test_idx, latent_dim=32, epochs_representation=30, epochs_finetune=30
     )
     _, plain_baseline_mae = train_plain_baseline_alfa_mlp(
         merged_data, train_idx, val_idx, test_idx, epochs=30
