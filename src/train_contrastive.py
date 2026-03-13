@@ -91,7 +91,6 @@ def train_step(batch, encoder, proj_head, optimizer, temperature=0.1):
 # MLP head on top of frozen → fine-tuned encoder
 # ─────────────────────────────────────────────
 def build_encoder_mlp(encoder: models.Model) -> models.Model:
-    encoder.trainable = False   # fine-tune encoder weights jointly
     inp = layers.Input(shape=encoder.input_shape[1:])
     z = encoder(inp)
     x = layers.Dense(128, activation="relu")(z)

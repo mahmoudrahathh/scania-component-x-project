@@ -65,8 +65,6 @@ def build_vae(input_dim, latent_dim=100):
 
 def build_vae_mlp(encoder, latent_dim):
     """Build VAE + MLP by attaching MLP head to the frozen encoder."""
-    # fine-tune encoder weights jointly (uncomment if you want to fine-tune the encoder)  
-    encoder.trainable = False  
 
     inputs = layers.Input(shape=encoder.input_shape[1:])
     z_mean, z_log_var, z = encoder(inputs)
