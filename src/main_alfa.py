@@ -1,5 +1,6 @@
 import os
 import glob
+import re
 import numpy as np
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype, is_datetime64tz_dtype
@@ -36,38 +37,33 @@ def _read_alfa(alfa_dir: str):
 
 
 def _pick_degradation_features(df: pd.DataFrame, desc: pd.DataFrame):
-    desc_cols = list(desc.columns)
-    if len(desc_cols) >= 2:
-        c_name, c_desc = desc_cols[0], desc_cols[1]
-        desc_map = {
-            str(r[c_name]).strip(): str(r[c_desc]).strip().lower()
-            for _, r in desc.iterrows()
-            if pd.notna(r[c_name])
-        }
-    else:
-        desc_map = {}
+    # requested ALWA feature group
+    exact_cols = [
+        "alwa_group.bypass.duration",
+        "alwa_group.bypass.volume",
+        "alwa_group.high_flow.duration",
+        "alwa_group.high_flow.volume",
+        "alwa_group.lamp_fault.duration",
+        "alwa_group.lamp_fault.volume",
+        "alwa_group.low_uvi.duration",
+        "alwa_group.low_uvi.volume",
+        "alwa_group.no_cip.duration",
+        "alwa_group.no_cip.volume",
+    ]
 
-    # Feature families from your prototype
-    uv_i_cols = [c for c in df.columns if c.startswith("uvi.") and c.endswith(".mean")]
-    power_cols = [c for c in df.columns if c.startswith("power_per_lamp_kw.") and c.endswith(".median_of_mean")]
-    runtime_uvr = [c for c in df.columns if c.startswith("uvr_usage_duration.")]
-    pressure_diff_col = "pressure.filter_differential.mean" if "pressure.filter_differential.mean" in df.columns else None
+    exact_present = [c for c in exact_cols if c in df.columns]
 
-    # Extra keyword-based numeric features as fallback
-    keywords = ["alarm", "duration", "uvi", "warning", "pressure", "differential", "fault", "error", "anomaly"]
-    numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-    keyword_cols = []
-    for c in numeric_cols:
-        txt = f"{c.lower()} {desc_map.get(c, '')}"
-        if any(k in txt for k in keywords):
-            keyword_cols.append(c)
+    # generic pattern: alwa.[code].duration
+    alwa_code_duration_cols = [
+        c for c in df.columns
+        if re.match(r"^alwa\.[^.]+\.duration$", c) is not None
+    ]
 
-    picked = list(dict.fromkeys(uv_i_cols + power_cols + runtime_uvr + keyword_cols))
+    picked = list(dict.fromkeys(alwa_code_duration_cols + exact_present))
+
     return picked, {
-        "uv_i_cols": uv_i_cols,
-        "power_cols": power_cols,
-        "runtime_uvr": runtime_uvr,
-        "pressure_diff_col": pressure_diff_col,
+        "alwa_code_duration_cols": alwa_code_duration_cols,
+        "alwa_group_exact_cols": exact_present,
     }
 
 
@@ -96,113 +92,64 @@ def _build_pseudo_rul_dataframe(
         df["time"] = pd.NaT
         df["time_step"] = df.groupby("vehicle_id").cumcount() + 1
     else:
-        # Always coerce to tz-aware UTC to avoid naive/aware mismatch
         df["time"] = pd.to_datetime(df[time_col], errors="coerce", utc=True)
         df = df.sort_values(["vehicle_id", "time"]).copy()
         df["time_step"] = df.groupby("vehicle_id").cumcount() + 1
 
-    # ---- degradation event construction (from your prototype) ----
-    uv_i_cols = [c for c in df.columns if c.startswith("uvi.") and c.endswith(".mean")]
-    power_cols = [c for c in df.columns if c.startswith("power_per_lamp_kw.") and c.endswith(".median_of_mean")]
-    runtime_uvr = [c for c in df.columns if c.startswith("uvr_usage_duration.")]
-    pressure_diff_col = "pressure.filter_differential.mean" if "pressure.filter_differential.mean" in df.columns else None
+    degradation_features = [c for c in degradation_features if c in df.columns]
+    if not degradation_features:
+        raise ValueError("No requested ALWA degradation features were found in the ALFA dataframe.")
 
-    for c in set(uv_i_cols + power_cols + runtime_uvr + ([pressure_diff_col] if pressure_diff_col else [])):
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
+    for c in degradation_features:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
 
-    LOW_Q, HIGH_Q = 0.10, 0.90
+    # stricter event definition: persistent activation over consecutive rows
+    active_matrix = (df[degradation_features] > 0).astype(int)
+    df["raw_event_score"] = active_matrix.sum(axis=1)
+    df["raw_event"] = df["raw_event_score"] >= 1
 
-    def qflag(g: pd.DataFrame, cols: list, lower_q=None, upper_q=None):
-        out = pd.DataFrame(index=g.index)
-        for c in cols:
-            if c not in g.columns:
-                continue
-            if lower_q is not None:
-                out[f"{c}__lowq"] = g[c] <= g[c].quantile(lower_q)
-            if upper_q is not None:
-                out[f"{c}__highq"] = g[c] >= g[c].quantile(upper_q)
-        return out
-
-    uv_low_flags = []
-    power_hi_flags = []
-    for _, g in df.groupby("vehicle_id", sort=False):
-        uv_low_flags.append(qflag(g, uv_i_cols, lower_q=LOW_Q))
-        power_hi_flags.append(qflag(g, power_cols, upper_q=HIGH_Q))
-
-    uv_low_flags = pd.concat(uv_low_flags, axis=0) if len(uv_low_flags) else pd.DataFrame(index=df.index)
-    power_hi_flags = pd.concat(power_hi_flags, axis=0) if len(power_hi_flags) else pd.DataFrame(index=df.index)
-
-    df["lamp_uv_low"] = uv_low_flags.any(axis=1) if not uv_low_flags.empty else False
-    df["lamp_power_hi"] = power_hi_flags.any(axis=1) if not power_hi_flags.empty else False
-
-    if runtime_uvr:
-        for c in runtime_uvr:
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
-        df["aging_uvr_sec"] = df[runtime_uvr].max(axis=1)
-    else:
-        df["aging_uvr_sec"] = df.groupby("vehicle_id").cumcount().astype(float)
-
-    df["aging_present"] = df.groupby("vehicle_id")["aging_uvr_sec"].transform(
-        lambda s: s >= s.quantile(0.50)
+    min_consecutive_steps = 3
+    rolling_hits = (
+        df.groupby("vehicle_id")["raw_event"]
+        .transform(lambda s: s.astype(int).rolling(min_consecutive_steps, min_periods=min_consecutive_steps).sum())
+        .fillna(0)
     )
 
-    if pressure_diff_col is not None:
-        df["filter_clogging"] = df.groupby("vehicle_id")[pressure_diff_col].transform(
-            lambda s: s > (s.mean(skipna=True) + 2.0 * s.std(skipna=True))
-        ).fillna(False)
-    else:
-        df["filter_clogging"] = False
+    df["degradation_event"] = rolling_hits >= min_consecutive_steps
 
-    lamp_fault = "alwa_group.lamp_fault.duration"
-    low_uvi = "alwa_group.low_uvi.duration"
-    interrupted = "interrupted_by_alarm"
+    prev_event = df.groupby("vehicle_id")["degradation_event"].shift(1, fill_value=False)
+    df["degradation_event_start"] = df["degradation_event"] & (~prev_event)
 
-    df["lamp_fault_event"] = pd.to_numeric(df[lamp_fault], errors="coerce").fillna(0.0) > 0 if lamp_fault in df.columns else False
-    df["low_uvi_event"] = pd.to_numeric(df[low_uvi], errors="coerce").fillna(0.0) > 0 if low_uvi in df.columns else False
-    df["alarm_interrupt"] = df[interrupted].fillna(0).astype(bool) if interrupted in df.columns else False
-
-    df["lamp_degradation"] = (df["lamp_uv_low"] | df["lamp_power_hi"]) & df["aging_present"]
-    df["degradation_event"] = df[
-        ["lamp_degradation", "filter_clogging", "low_uvi_event", "lamp_fault_event", "alarm_interrupt"]
-    ].any(axis=1)
-
-    # ---- pseudo-RUL (hours) = time to next degradation event ----
+    # RUL = time/steps to next degradation episode start
     if df["time"].notna().any():
-        # keep same dtype/tz as df["time"] and avoid assignment dtype conflict
-        df["event_time"] = df["time"].where(df["degradation_event"], pd.NaT)
+        df["event_time"] = df["time"].where(df["degradation_event_start"], pd.NaT)
         df["next_event_time"] = df.groupby("vehicle_id")["event_time"].transform(lambda s: s.bfill())
         rul_td = df["next_event_time"] - df["time"]
         df["RUL"] = rul_td.dt.total_seconds() / 3600.0
     else:
-        # fallback without timestamps: step-based pseudo-RUL
-        df["event_step"] = np.where(df["degradation_event"], df["time_step"], np.nan)
+        df["event_step"] = np.where(df["degradation_event_start"], df["time_step"], np.nan)
         df["next_event_step"] = df.groupby("vehicle_id")["event_step"].transform(lambda s: s.bfill())
         df["RUL"] = df["next_event_step"] - df["time_step"]
+
+    # rows already in degradation episode get RUL = 0
+    df.loc[df["degradation_event"], "RUL"] = 0.0
 
     # censored samples -> unlabeled
     df["RUL"] = pd.to_numeric(df["RUL"], errors="coerce")
     df.loc[~np.isfinite(df["RUL"]), "RUL"] = -1.0
     df.loc[df["RUL"] < 0, "RUL"] = -1.0
 
-    # --- balance labeled/unlabeled by masking far-from-event labels ---
-    # Keep low-RUL (near-event) labels, mask high-RUL rows to -1 until target ratio is reached.
+    # keep supervised / unsupervised ratio close to target
     cur_unlabeled_ratio = float((df["RUL"] == -1).mean())
     if cur_unlabeled_ratio < target_unlabeled_ratio:
         need = int(np.ceil((target_unlabeled_ratio - cur_unlabeled_ratio) * len(df)))
         labeled_idx = df.index[df["RUL"] >= 0]
         if need > 0 and len(labeled_idx) > 0:
-            # Prefer masking large RUL (far from event)
             candidates = df.loc[labeled_idx, "RUL"].sort_values(ascending=False).index.to_numpy()
-
-            # small shuffle inside equal-ish regions for robustness
             rng = np.random.default_rng(random_state)
-            head = rng.permutation(candidates[:need])
-            to_mask = head[:need]
-
+            to_mask = rng.permutation(candidates[:need])[:need]
             df.loc[to_mask, "RUL"] = -1.0
 
-    # required compatibility columns
     df["length_of_study_time_step"] = df.groupby("vehicle_id")["time_step"].transform("max").astype(int)
     df["in_study_repair"] = 0
 
@@ -248,6 +195,9 @@ def main():
     print(f"Samples with RUL >= 0: {rul_non_negative}")
     print(f"Total samples: {len(merged_data)}")
     print(f"Merged data size: {merged_data.shape}")
+    print(merged_data["RUL"].describe())
+    print("\n[ALFA] Fraction with RUL = 0:", float((merged_data["RUL"] == 0).mean()))
+    print("[ALFA] Fraction unlabeled:", float((merged_data["RUL"] == -1).mean()))
 
     labeled_mask = merged_data["RUL"] >= 0
     labeled_indices = np.arange(int(labeled_mask.sum()))
@@ -282,15 +232,15 @@ def main():
     print(f"Standalone Baseline MLP MAE: {plain_baseline_mae:.4f}")
     print(f"MeanValuePredictor MAE:      {meanValuePredictor:.4f}")
 
-    visualize_latent_representations(
-        merged_data=merged_data,
-        ae_encoder=ae_encoder,
-        vae_encoder=vae_encoder,
-        contrastive_encoder=cl_encoder,
-        latent_dim=50,
-        random_state=42,
-        out_file="outputs/latent_spaces_pca2d_alfa.jpg",
-    )
+    # visualize_latent_representations(
+    #     merged_data=merged_data,
+    #     ae_encoder=ae_encoder,
+    #     vae_encoder=vae_encoder,
+    #     contrastive_encoder=cl_encoder,
+    #     latent_dim=50,
+    #     random_state=42,
+    #     out_file="outputs/latent_spaces_pca2d_alfa.jpg",
+    # )
 
 
 if __name__ == "__main__":
